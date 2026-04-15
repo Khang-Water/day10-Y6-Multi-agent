@@ -61,6 +61,64 @@ def load_raw_csv(path: Path) -> List[Dict[str, str]]:
             rows.append({k: (v or "").strip() for k, v in r.items()})
     return rows
 
+# Pattern cho Rule 1: nhận diện lỗi trích xuất phổ biến từ Word/PDF hoặc OCR lỗi (Tiếng Anh + Tiếng Việt)
+_BROKEN_ARTIFACTS_RE = re.compile(
+    r"(error!\s*reference source not found|error!\s*bookmark not defined|lỗi!\s*chưa xác định được dấu trang|\{{2,}|_{3,}|-{3,})",
+    re.IGNORECASE
+)
+
+# Pattern cho Rule 2: Các thẻ HTML phổ biến (<br>, <b>, <div>...), HTML entities (&nbsp;), ký tự ẩn (zero-width)
+_HTML_TAGS_RE = re.compile(r"<[^>]+>|&[a-zA-Z0-9#]+;|[\u200b\ufeff]", re.IGNORECASE)
+
+# Pattern cho Rule 3: Số điện thoại VN và Email cá nhân (gmail, yahoo, hotmail)
+_PII_RE = re.compile(r"(\b0[3|5|7|8|9][0-9]{8}\b|[a-zA-Z0-9_.+-]+@(gmail|yahoo|hotmail)\.com)", re.IGNORECASE)
+
+
+def _has_extraction_artifacts(text: str) -> Tuple[bool, str]:
+    """
+    Rule 1 (Mới): Phát hiện tàn dư lỗi từ quá trình trích xuất PDF/Word (Broken Artifacts).
+    
+    metric_impact:
+      - Tăng RAG_Answer_Quality: Ngăn chặn LLM đọc các thông báo lỗi hệ thống bị lọt vào chunk và nhầm đó là một phần của chính sách.
+      - Giảm Hallucination_Rate: Xóa bỏ dữ liệu nhiễu, giúp giảm rủi ro chatbot đưa ra câu trả lời vô nghĩa hoặc sai lệch.
+      
+    Trả về (has_artifact, matched_pattern).
+    """
+    match = _BROKEN_ARTIFACTS_RE.search(text)
+    if match:
+        return True, match.group(0)
+    return False, ""
+
+
+def _clean_html_and_formats(text: str) -> Tuple[bool, str]:
+    """
+    Rule 2: Phát hiện và làm sạch mã định dạng / HTML tags thừa (Format Stripping).
+    
+    metric_impact:
+      - Tăng Readability_Score: Dữ liệu sạch sẽ, không bị rác định dạng khi hiển thị cho end-user.
+      - Cải thiện Token_Efficiency: Tiết kiệm chi phí token do LLM không phải đọc các thẻ HTML vô nghĩa.
+      
+    Trả về (is_cleaned, cleaned_text).
+    """
+    new_text = _HTML_TAGS_RE.sub(" ", text)
+    new_text = _norm_text(new_text)  # Chuẩn hóa lại khoảng trắng sau khi xóa tag
+    return new_text != text, new_text
+
+
+def _has_pii_leakage(text: str) -> Tuple[bool, str]:
+    """
+    Rule 3: Phát hiện rò rỉ dữ liệu nhạy cảm cá nhân (PII - Personally Identifiable Information).
+    
+    metric_impact:
+      - Giảm PII_Leakage_Risk: Ngăn chặn RAG rò rỉ thông tin liên lạc cá nhân của nhân sự.
+      - Tăng Compliance_Score: Đảm bảo tuân thủ các chính sách bảo mật dữ liệu của doanh nghiệp.
+      
+    Trả về (has_pii, matched_pii).
+    """
+    match = _PII_RE.search(text)
+    if match:
+        return True, match.group(0)
+    return False, ""
 
 def clean_rows(
     rows: List[Dict[str, str]],
@@ -114,6 +172,34 @@ def clean_rows(
         if not text:
             quarantine.append({**raw, "reason": "missing_chunk_text"})
             continue
+
+        # --- RULE 1 (Mới): Kiểm duyệt tàn dư lỗi trích xuất ---
+        has_artifact, matched_err = _has_extraction_artifacts(text)
+        if has_artifact:
+            quarantine.append(
+                {
+                    **raw,
+                    "reason": "extraction_artifact_detected",
+                    "artifact_pattern": matched_err,
+                }
+            )
+            continue
+        # -----------------------------------------------------
+        # --- RULE 2: Làm sạch mã định dạng / HTML tags thừa (Clean Rule) ---
+        is_html_cleaned, text = _clean_html_and_formats(text)
+        if not text:  # Nếu text chỉ toàn chứa thẻ HTML, xóa xong thành chuỗi rỗng
+            quarantine.append({**raw, "reason": "empty_after_html_strip"})
+            continue
+        # -------------------------------------------------------------------
+
+        # --- RULE 3: Cách ly đoạn văn bản rò rỉ dữ liệu cá nhân (PII) ---
+        has_pii, pii_val = _has_pii_leakage(text)
+        if has_pii:
+            quarantine.append(
+                {**raw, "reason": "pii_leakage_detected", "matched_text": pii_val}
+            )
+            continue
+        # ----------------------------------------------------------------
 
         key = _norm_text(text)
         if key in seen_text:
@@ -174,3 +260,26 @@ def write_quarantine_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
         w.writeheader()
         for r in rows:
             w.writerow(r)
+
+
+# --- ĐOẠN CODE NÀY ĐỂ CHẠY FILE THỰC TẾ ---
+if __name__ == "__main__":
+    # Đảm bảo bạn đang để file data thô ở đúng đường dẫn, ví dụ: 'data/raw_export.csv'
+    raw_path = Path("data/raw/policy_export_dirty.csv") # <-- Sửa lại đường dẫn này nếu cần
+    
+    if raw_path.exists():
+        print("Đang tải dữ liệu thô...")
+        raw_data = load_raw_csv(raw_path)
+        
+        print("Đang làm sạch dữ liệu...")
+        cleaned_data, quarantine_data = clean_rows(raw_data)
+        
+        # Xuất file theo đúng yêu cầu đề bài
+        cleaned_out_path = Path("artifacts/cleaned/cleaned_rows.csv")
+        quarantine_out_path = Path("artifacts/quarantine/quarantine_log.csv")
+        write_cleaned_csv(cleaned_out_path, cleaned_data)
+        write_quarantine_csv(quarantine_out_path, quarantine_data)
+        print(f"Xong! Đã xuất {len(cleaned_data)} dòng sạch và {len(quarantine_data)} dòng lỗi.")
+        print(f"Quarantine file lưu tại: {quarantine_out_path}")
+    else:
+        print(f"Lỗi: Không tìm thấy file dữ liệu thô tại {raw_path}")
