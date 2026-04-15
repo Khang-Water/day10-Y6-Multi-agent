@@ -19,37 +19,22 @@ A/B Rule (từ slide):
 
 import json
 import csv
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from rag_answer import rag_answer
+from openai import OpenAI
+from config import (
+    TEST_QUESTIONS_PATH,
+    RESULTS_DIR,
+    BASELINE_CONFIG,
+    VARIANT_CONFIG,
+    OPENAI_API_KEY,
+)
 
-# =============================================================================
-# CẤU HÌNH
-# =============================================================================
-
-TEST_QUESTIONS_PATH = Path(__file__).parent / "data" / "test_questions.json"
-RESULTS_DIR = Path(__file__).parent / "results"
-
-# Cấu hình baseline (Sprint 2)
-BASELINE_CONFIG = {
-    "retrieval_mode": "dense",
-    "top_k_search": 10,
-    "top_k_select": 3,
-    "use_rerank": False,
-    "label": "baseline_dense",
-}
-
-# Cấu hình variant (Sprint 3 — điều chỉnh theo lựa chọn của nhóm)
-# TODO Sprint 4: Cập nhật VARIANT_CONFIG theo variant nhóm đã implement
-VARIANT_CONFIG = {
-    "retrieval_mode": "hybrid",   # Hoặc "dense" nếu chỉ đổi rerank
-    "top_k_search": 10,
-    "top_k_select": 3,
-    "use_rerank": True,           # Hoặc False nếu variant là hybrid không rerank
-    "label": "variant_hybrid_rerank",
-}
-
+# Model used exclusively for LLM-as-Judge (always OpenAI JSON mode)
+JUDGE_MODEL = "gpt-4o-mini"
 
 # =============================================================================
 # SCORING FUNCTIONS
@@ -88,12 +73,54 @@ def score_faithfulness(
 
     Trả về dict với: score (1-5) và notes (lý do)
     """
-    # TODO Sprint 4: Implement scoring
-    # Tạm thời trả về None (yêu cầu chấm thủ công)
-    return {
-        "score": None,
-        "notes": "TODO: Chấm thủ công hoặc implement LLM-as-Judge",
-    }
+    # 1. Gom các chunks lại thành một đoạn text duy nhất
+    chunks_text = "\n\n".join([
+        f"--- Chunk {i+1} ---\n{chunk.get('content', chunk.get('text', str(chunk)))}" 
+        for i, chunk in enumerate(chunks_used)
+    ])
+
+    # 2. Xây dựng prompt theo đúng mô tả trong Docstring
+    system_prompt = "You are an expert evaluator. Your task is to rate the faithfulness of an answer based on retrieved contexts."
+    user_prompt = f"""
+    Given these retrieved chunks: 
+    {chunks_text}
+    
+    And this answer: 
+    {answer}
+    
+    Rate the faithfulness on a scale of 1-5.
+    5 = completely grounded in the provided context.
+    1 = answer contains information not in the context.
+    Output JSON: {{"score": <int>, "notes": "<string>"}}
+    """
+
+    # 3. Gọi LLM để chấm điểm tự động
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://models.inference.ai.azure.com/")
+        response = client.chat.completions.create(
+            model=JUDGE_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0
+        )
+
+        # 4. Parse kết quả JSON trả về
+        result = json.loads(response.choices[0].message.content)
+
+        return {
+            "score": result.get("score"),
+            "notes": result.get("notes"),
+        }
+
+    except Exception as e:
+        # Nếu API lỗi hoặc LLM tạch, fallback về chấm thủ công
+        return {
+            "score": None,
+            "notes": f"Lỗi LLM-as-Judge ({str(e)}). Yêu cầu chấm thủ công."
+        }
 
 
 def score_answer_relevance(
@@ -113,10 +140,50 @@ def score_answer_relevance(
 
     TODO Sprint 4: Implement tương tự score_faithfulness
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_answer_relevance",
-    }
+    # 1. Xây dựng prompt đánh giá dựa trên tiêu chí của docstring
+    system_prompt = "You are an expert evaluator. Your task is to rate the relevance of an AI-generated answer to a user's query."
+    user_prompt = f"""
+    Given the user query: 
+    {query}
+    
+    And the AI's answer: 
+    {answer}
+    
+    Rate the answer relevance on a scale of 1-5 based on these criteria:
+    5: Trả lời trực tiếp và đầy đủ câu hỏi.
+    4: Trả lời đúng nhưng thiếu vài chi tiết phụ.
+    3: Trả lời có liên quan nhưng chưa đúng trọng tâm.
+    2: Trả lời lạc đề một phần.
+    1: Hoàn toàn không trả lời câu hỏi.
+    
+    Output strictly ONE JSON object in this format: {{"score": <int>, "notes": "<string explaining the reason>"}}
+    """
+
+    # 2. Gọi LLM để chấm điểm tự động
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://models.inference.ai.azure.com/")
+        response = client.chat.completions.create(
+            model=JUDGE_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0
+        )
+
+        # 3. Parse kết quả JSON trả về
+        result = json.loads(response.choices[0].message.content)
+
+        return {
+            "score": result.get("score"),
+            "notes": result.get("notes"),
+        }
+    except Exception as e:
+        return {
+            "score": None,
+            "notes": f"Lỗi LLM-as-Judge ({str(e)}). Yêu cầu chấm thủ công."
+        }
 
 
 def score_context_recall(
@@ -136,7 +203,7 @@ def score_context_recall(
         expected_sources = ["policy/refund-v4.pdf", "sla-p1-2026.pdf"]
         retrieved_sources = ["policy/refund-v4.pdf", "helpdesk-faq.md"]
         recall = 1/2 = 0.5
-
+        
     TODO Sprint 4:
     1. Lấy danh sách source từ chunks_used
     2. Kiểm tra xem expected_sources có trong retrieved sources không
@@ -146,28 +213,48 @@ def score_context_recall(
         # Câu hỏi không có expected source (ví dụ: "Không đủ dữ liệu" cases)
         return {"score": None, "recall": None, "notes": "No expected sources"}
 
+    # 1. Lấy danh sách source từ chunks_used
     retrieved_sources = {
         c.get("metadata", {}).get("source", "")
-        for c in chunks_used
+        for c in chunks_used if c.get("metadata", {}).get("source")
     }
 
-    # TODO: Kiểm tra matching theo partial path (vì source paths có thể khác format)
+    # 2. Kiểm tra matching theo partial path (vì source paths có thể khác format)
     found = 0
     missing = []
+    
     for expected in expected_sources:
-        # Kiểm tra partial match (tên file)
-        expected_name = expected.split("/")[-1].replace(".pdf", "").replace(".md", "")
-        matched = any(expected_name.lower() in r.lower() for r in retrieved_sources)
+        # Tách lấy tên file gốc (Bỏ đường dẫn thư mục và đuôi file)
+        # VD: "docs/policy/refund-v4.pdf" -> "refund-v4"
+        expected_basename = os.path.splitext(os.path.basename(expected))[0].lower()
+        
+        matched = False
+        for retrieved in retrieved_sources:
+            retrieved_basename = os.path.splitext(os.path.basename(retrieved))[0].lower()
+
+            # Normalize hyphens → underscores before comparing (sources use both conventions)
+            expected_norm = expected_basename.replace("-", "_")
+            retrieved_norm = retrieved_basename.replace("-", "_")
+
+            if expected_norm in retrieved_norm or retrieved_norm in expected_norm:
+                matched = True
+                break
+                
         if matched:
             found += 1
         else:
             missing.append(expected)
 
-    recall = found / len(expected_sources) if expected_sources else 0
+    # 3. Tính recall score
+    recall = found / len(expected_sources)
+    
+    # Chuyển đổi sang thang điểm 1-5
+    score = 1 if recall == 0 else round(recall * 5)
+    score = max(1, min(5, score)) # Chặn trên/dưới để đảm bảo điểm từ 1 đến 5
 
     return {
-        "score": round(recall * 5),  # Convert to 1-5 scale
-        "recall": recall,
+        "score": score,
+        "recall": round(recall, 4),
         "found": found,
         "missing": missing,
         "notes": f"Retrieved: {found}/{len(expected_sources)} expected sources" +
@@ -198,10 +285,61 @@ def score_completeness(
          Rate completeness 1-5. Are all key points covered?
          Output: {'score': int, 'missing_points': [str]}"
     """
-    return {
-        "score": None,
-        "notes": "TODO: Implement score_completeness (so sánh với expected_answer)",
-    }
+    # 1. Xây dựng prompt để LLM đóng vai trò giám khảo đối chiếu 2 câu trả lời
+    system_prompt = "You are an expert evaluator. Your task is to evaluate the completeness of an AI-generated answer against an expected ground-truth answer."
+    user_prompt = f"""
+    Given the user query:
+    {query}
+    
+    The expected ideal answer is:
+    {expected_answer}
+    
+    The AI-generated answer to evaluate is:
+    {answer}
+    
+    Compare the model answer with the expected answer. Rate completeness on a scale of 1-5.
+    5: Answer includes all key points from the expected answer.
+    4: Missing 1 minor detail.
+    3: Missing some important information.
+    2: Missing many important details.
+    1: Missing most of the core content.
+    
+    Output strictly ONE JSON object in this format: 
+    {{
+        "score": <int>, 
+        "missing_points": ["<point 1>", "<point 2>"], 
+        "notes": "<string explaining the reason>"
+    }}
+    """
+
+    # 2. Gọi LLM để chấm điểm tự động
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY, base_url="https://models.inference.ai.azure.com/")
+        response = client.chat.completions.create(
+            model=JUDGE_MODEL,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.0
+        )
+
+        # 3. Parse kết quả JSON trả về
+        result = json.loads(response.choices[0].message.content)
+
+        return {
+            "score": result.get("score"),
+            "missing_points": result.get("missing_points", []),
+            "notes": result.get("notes"),
+        }
+
+    except Exception as e:
+        return {
+            "score": None,
+            "missing_points": [],
+            "notes": f"Lỗi LLM-as-Judge ({str(e)}). Yêu cầu chấm thủ công."
+        }
 
 
 # =============================================================================
@@ -309,6 +447,23 @@ def run_scorecard(
         scores = [r[metric] for r in results if r[metric] is not None]
         avg = sum(scores) / len(scores) if scores else None
         print(f"\nAverage {metric}: {avg:.2f}" if avg else f"\nAverage {metric}: N/A (chưa chấm)")
+
+    if verbose:
+        print(f"\n{'='*85}")
+        print(f"BẢNG TỔNG HỢP KẾT QUẢ CHI TIẾT - {label.upper()}")
+        print(f"{'ID':<5} | {'Category':<15} | {'Faithful':<10} | {'Relevant':<10} | {'Recall':<8} | {'Complete':<8}")
+        print("-" * 85)
+        for r in results:
+            f_score = str(r['faithfulness']) if r['faithfulness'] is not None else 'N/A'
+            rel_score = str(r['relevance']) if r['relevance'] is not None else 'N/A'
+            rec_score = str(r['context_recall']) if r['context_recall'] is not None else 'N/A'
+            comp_score = str(r['completeness']) if r['completeness'] is not None else 'N/A'
+            
+            # Cắt ngắn category nếu quá dài để bảng không bị vỡ
+            cat_display = r['category'][:15] if isinstance(r['category'], str) else str(r['category'])
+            
+            print(f"{r['id']:<5} | {cat_display:<15} | {f_score:<10} | {rel_score:<10} | {rec_score:<8} | {comp_score:<8}")
+        print(f"{'='*85}\n")
 
     return results
 
@@ -465,6 +620,8 @@ if __name__ == "__main__":
         print("Không tìm thấy file test_questions.json!")
         test_questions = []
 
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+
     # --- Chạy Baseline ---
     print("\n--- Chạy Baseline ---")
     print("Lưu ý: Cần hoàn thành Sprint 2 trước khi chạy scorecard!")
@@ -476,7 +633,6 @@ if __name__ == "__main__":
         )
 
         # Save scorecard
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
         baseline_md = generate_scorecard_summary(baseline_results, "baseline_dense")
         scorecard_path = RESULTS_DIR / "scorecard_baseline.md"
         scorecard_path.write_text(baseline_md, encoding="utf-8")
@@ -488,28 +644,68 @@ if __name__ == "__main__":
 
     # --- Chạy Variant (sau khi Sprint 3 hoàn thành) ---
     # TODO Sprint 4: Uncomment sau khi implement variant trong rag_answer.py
-    # print("\n--- Chạy Variant ---")
-    # variant_results = run_scorecard(
-    #     config=VARIANT_CONFIG,
-    #     test_questions=test_questions,
-    #     verbose=True,
-    # )
-    # variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
-    # (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
+    print("\n--- Chạy Variant ---")
+    variant_results = run_scorecard(
+        config=VARIANT_CONFIG,
+        test_questions=test_questions,
+        verbose=True,
+    )
+    variant_md = generate_scorecard_summary(variant_results, VARIANT_CONFIG["label"])
+    (RESULTS_DIR / "scorecard_variant.md").write_text(variant_md, encoding="utf-8")
 
     # --- A/B Comparison ---
     # TODO Sprint 4: Uncomment sau khi có cả baseline và variant
-    # if baseline_results and variant_results:
-    #     compare_ab(
-    #         baseline_results,
-    #         variant_results,
-    #         output_csv="ab_comparison.csv"
-    #     )
+    if baseline_results and variant_results:
+        compare_ab(
+            baseline_results,
+            variant_results,
+            output_csv="ab_comparison.csv"
+        )
 
-    print("\n\nViệc cần làm Sprint 4:")
-    print("  1. Hoàn thành Sprint 2 + 3 trước")
-    print("  2. Chấm điểm thủ công hoặc implement LLM-as-Judge trong score_* functions")
-    print("  3. Chạy run_scorecard(BASELINE_CONFIG)")
-    print("  4. Chạy run_scorecard(VARIANT_CONFIG)")
-    print("  5. Gọi compare_ab() để thấy delta")
-    print("  6. Cập nhật docs/tuning-log.md với kết quả và nhận xét")
+    # --- Tạo grading_run.json (chạy sau 17:00 khi grading_questions.json được public) ---
+    grading_path = Path(__file__).parent / "data" / "grading_questions.json"
+    if grading_path.exists():
+        print("\n--- Tạo logs/grading_run.json ---")
+        logs_dir = Path(__file__).parent / "logs"
+        logs_dir.mkdir(exist_ok=True)
+
+        with open(grading_path, encoding="utf-8") as f:
+            grading_qs = json.load(f)
+
+        grading_log = []
+        for q in grading_qs:
+            try:
+                result = rag_answer(
+                    q["question"],
+                    retrieval_mode=VARIANT_CONFIG["retrieval_mode"],
+                    top_k_search=VARIANT_CONFIG["top_k_search"],
+                    top_k_select=VARIANT_CONFIG["top_k_select"],
+                    use_rerank=VARIANT_CONFIG["use_rerank"],
+                    verbose=False,
+                )
+                grading_log.append({
+                    "id": q["id"],
+                    "question": q["question"],
+                    "answer": result["answer"],
+                    "sources": result["sources"],
+                    "chunks_retrieved": len(result["chunks_used"]),
+                    "retrieval_mode": result["config"]["retrieval_mode"],
+                    "timestamp": datetime.now().isoformat(),
+                })
+            except Exception as e:
+                grading_log.append({
+                    "id": q["id"],
+                    "question": q["question"],
+                    "answer": f"PIPELINE_ERROR: {e}",
+                    "sources": [],
+                    "chunks_retrieved": 0,
+                    "retrieval_mode": VARIANT_CONFIG["retrieval_mode"],
+                    "timestamp": datetime.now().isoformat(),
+                })
+
+        log_path = logs_dir / "grading_run.json"
+        with open(log_path, "w", encoding="utf-8") as f:
+            json.dump(grading_log, f, ensure_ascii=False, indent=2)
+        print(f"Grading log saved: {log_path} ({len(grading_log)} câu)")
+    else:
+        print(f"\n[Grading] {grading_path} chưa có — chạy lại eval.py sau 17:00 khi file được public.")

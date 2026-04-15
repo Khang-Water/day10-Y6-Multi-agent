@@ -18,33 +18,37 @@
 ```
 
 **Mô tả ngắn gọn:**
-> TODO: Mô tả hệ thống trong 2-3 câu. Nhóm xây gì? Cho ai dùng? Giải quyết vấn đề gì?
+> Nhóm xây dựng RAG pipeline cho internal knowledge base của doanh nghiệp, giúp nhân viên tra cứu policy (hoàn tiền, SLA, access control, HR) mà không cần tìm thủ công trong nhiều file. Hệ thống nhận câu hỏi tiếng Việt, tìm đoạn văn bản liên quan từ 5 tài liệu nội bộ, rồi dùng LLM sinh câu trả lời ngắn gọn có trích dẫn nguồn. Use case chính: IT helpdesk, CS refund queries, HR policy lookup.
 
 ---
 
 ## 2. Indexing Pipeline (Sprint 1)
 
 ### Tài liệu được index
-| File | Nguồn | Department | Số chunk |
+| File | Nguồn | Department | Số chunk (ước tính) |
 |------|-------|-----------|---------|
-| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | TODO |
-| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | TODO |
-| `access_control_sop.txt` | it/access-control-sop.md | IT Security | TODO |
-| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | TODO |
-| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | TODO |
+| `policy_refund_v4.txt` | policy/refund-v4.pdf | CS | ~4 |
+| `sla_p1_2026.txt` | support/sla-p1-2026.pdf | IT | ~5 |
+| `access_control_sop.txt` | it/access-control-sop.md | IT Security | ~4 |
+| `it_helpdesk_faq.txt` | support/helpdesk-faq.md | IT | ~3 |
+| `hr_leave_policy.txt` | hr/leave-policy-2026.pdf | HR | ~3 |
+
+> Dùng `inspect_metadata_coverage()` trong `index.py` để xem số chunk thực tế.
 
 ### Quyết định chunking
 | Tham số | Giá trị | Lý do |
 |---------|---------|-------|
-| Chunk size | TODO tokens | TODO |
-| Overlap | TODO tokens | TODO |
-| Chunking strategy | Heading-based / paragraph-based | TODO |
+| Chunk size | 400 tokens (~1600 ký tự) | Đủ context cho 1 điều khoản, không quá dài để gây noise |
+| Overlap | 80 tokens (~320 ký tự) | Tránh cắt giữa câu liên tiếp giữa 2 chunk |
+| Chunking strategy | Hybrid: heading-based trước, paragraph-based fallback | Heading giữ nguyên cấu trúc doc; paragraph chia đều phần còn lại |
 | Metadata fields | source, section, effective_date, department, access | Phục vụ filter, freshness, citation |
 
+> **Chi tiết**: `index.py` split theo pattern `=== ... ===` trước (section heading), sau đó trong mỗi section dùng `_split_by_size()` chia theo paragraph với overlap từ chunk trước.
+
 ### Embedding model
-- **Model**: TODO (OpenAI text-embedding-3-small / paraphrase-multilingual-MiniLM-L12-v2)
-- **Vector store**: ChromaDB (PersistentClient)
-- **Similarity metric**: Cosine
+- **Model**: `text-embedding-3-small` (OpenAI) nếu có `OPENAI_API_KEY`; fallback: `paraphrase-multilingual-MiniLM-L12-v2` (sentence-transformers, local)
+- **Vector store**: ChromaDB `PersistentClient` — lưu tại `chroma_db/`, collection `"rag_lab"`
+- **Similarity metric**: Cosine (`hnsw:space = cosine`)
 
 ---
 
@@ -58,18 +62,20 @@
 | Top-k select | 3 |
 | Rerank | Không |
 
-### Variant (Sprint 3)
+### Variant (Sprint 3) — Hybrid, no rerank
 | Tham số | Giá trị | Thay đổi so với baseline |
 |---------|---------|------------------------|
-| Strategy | TODO (hybrid / dense) | TODO |
-| Top-k search | TODO | TODO |
-| Top-k select | TODO | TODO |
-| Rerank | TODO (cross-encoder / MMR) | TODO |
-| Query transform | TODO (expansion / HyDE / decomposition) | TODO |
+| Strategy | Hybrid (dense + BM25 via RRF) | dense → hybrid |
+| Top-k search | 15 | 10 → 15 |
+| Top-k select | 5 | 3 → 5 |
+| Rerank | Không (cross-encoder đã thử ở Variant 1, gây giảm điểm) | — |
+| Query transform | Không | — |
+| Dense weight | 0.5 | mới (semantic vs keyword cân bằng) |
+| Sparse weight | 0.5 | mới (BM25) |
+| RRF k | 60 | mới (hằng số chuẩn) |
 
 **Lý do chọn variant này:**
-> TODO: Giải thích tại sao chọn biến này để tune.
-> Ví dụ: "Chọn hybrid vì corpus có cả câu tự nhiên (policy) lẫn mã lỗi và tên chuyên ngành (SLA ticket P1, ERR-403)."
+> Corpus trộn lẫn ngôn ngữ tự nhiên (policy clauses) và exact keyword (tên tài liệu cũ "Approval Matrix", mã priority "P1", tên trường "subscription"). Dense search bỏ lỡ exact-term queries. Hybrid (dense + BM25 RRF) giải quyết được alias query (q07, q10) mà không cần reindex. Không dùng rerank vì cross-encoder English-only chấm tiếng Việt kém (-0.60 faithfulness ở Variant 1).
 
 ---
 
@@ -96,9 +102,10 @@ Answer:
 ### LLM Configuration
 | Tham số | Giá trị |
 |---------|---------|
-| Model | TODO (gpt-4o-mini / gemini-1.5-flash) |
-| Temperature | 0 (để output ổn định cho eval) |
+| Model | `gpt-4o-mini` (OpenAI, default) hoặc `gemini-2.0-flash` (nếu `LLM_PROVIDER=gemini`) |
+| Temperature | 0 (deterministic — ổn định cho eval) |
 | Max tokens | 512 |
+| Provider | Đọc từ `.env`: `LLM_PROVIDER=openai` hoặc `gemini` hoặc `groq` |
 
 ---
 
@@ -116,21 +123,34 @@ Answer:
 
 ---
 
-## 6. Diagram (tùy chọn)
+## 6. Diagram
 
-> TODO: Vẽ sơ đồ pipeline nếu có thời gian. Có thể dùng Mermaid hoặc drawio.
-
+### Baseline (Dense)
 ```mermaid
 graph LR
-    A[User Query] --> B[Query Embedding]
-    B --> C[ChromaDB Vector Search]
+    A[User Query] --> B[Query Embedding\ntext-embedding-3-small]
+    B --> C[ChromaDB Vector Search\ncosine similarity]
     C --> D[Top-10 Candidates]
-    D --> E{Rerank?}
-    E -->|Yes| F[Cross-Encoder]
+    D --> E{score < 0.18?}
+    E -->|Yes| F[Abstain:\nKhông đủ dữ liệu]
     E -->|No| G[Top-3 Select]
-    F --> G
+    G --> H[Build Context Block\nwith citations]
+    H --> I[Grounded Prompt]
+    I --> J[gpt-4o-mini\ntemp=0]
+    J --> K[Answer + Citation]
+```
+
+### Variant (Hybrid + No Rerank)
+```mermaid
+graph LR
+    A[User Query] --> B1[Dense Retrieve\ntop-30]
+    A --> B2[BM25 Sparse Retrieve\ntop-30]
+    B1 --> C[RRF Merge\nk=60, 0.5/0.5]
+    B2 --> C
+    C --> D[Top-15 Candidates]
+    D --> G[Top-5 Select]
     G --> H[Build Context Block]
     H --> I[Grounded Prompt]
-    I --> J[LLM]
+    I --> J[gpt-4o-mini\ntemp=0]
     J --> K[Answer + Citation]
 ```
