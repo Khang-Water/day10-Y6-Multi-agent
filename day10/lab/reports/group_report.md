@@ -27,7 +27,6 @@ Freshness được tính từ `latest_exported_at` trong manifest. Do dữ liệ
 **Lệnh chạy một dòng (run sạch):**
 
 ```bash
-python etl_pipeline.py run --run-id final-good
 ```
 
 ---
