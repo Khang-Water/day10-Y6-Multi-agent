@@ -1,0 +1,7 @@
+chunk_id,doc_id,chunk_text,effective_date,exported_at
+policy_refund_v4_1_016b13630f2e1fc1,policy_refund_v4,yêu cầu được gửi trong vòng 7 ngày làm việc kể từ thời điểm xác nhận đơn hàng.,2026-02-01,2026-04-10T08:00:00
+policy_refund_v4_2_9543de5b4d6bc319,policy_refund_v4,yêu cầu hoàn tiền được chấp nhận trong vòng 7 ngày làm việc kể từ xác nhận đơn (ghi chú: bản sync cũ policy-v3 — lỗi migration). [cleaned: stale_refund_window],2026-02-01,2026-04-10T08:00:00
+sla_p1_2026_3_9e1986a018102627,sla_p1_2026,ticket p1 có sla phản hồi ban đầu 15 phút và resolution trong 4 giờ.,2026-02-01,2026-04-10T08:00:00
+it_helpdesk_faq_4_31a373a4bd9c6cdf,it_helpdesk_faq,tài khoản bị khóa sau 5 lần đăng nhập sai liên tiếp.,2026-02-01,2026-04-10T08:00:00
+hr_leave_policy_5_b7385e20389fe02b,hr_leave_policy,nhân viên dưới 3 năm kinh nghiệm được 12 ngày phép năm theo chính sách 2026.,2026-02-01,2026-04-10T08:00:00
+it_helpdesk_faq_6_4aaa17f7a67c4c15,it_helpdesk_faq,faq bổ sung: đổi mật khẩu qua portal self-service có thể mất tối đa 24 giờ để đồng bộ toàn hệ thống.,2026-02-01,2026-04-10T08:00:00
