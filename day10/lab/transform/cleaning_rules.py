@@ -265,7 +265,7 @@ def write_quarantine_csv(path: Path, rows: List[Dict[str, Any]]) -> None:
 # --- ĐOẠN CODE NÀY ĐỂ CHẠY FILE THỰC TẾ ---
 if __name__ == "__main__":
     # Đảm bảo bạn đang để file data thô ở đúng đường dẫn, ví dụ: 'data/raw_export.csv'
-    raw_path = Path("data/raw/policy_export_dirty.csv") # <-- Sửa lại đường dẫn này nếu cần
+    raw_path = Path("data/raw/policy_export_dirty_1.csv") # <-- Sửa lại đường dẫn này nếu cần
     
     if raw_path.exists():
         print("Đang tải dữ liệu thô...")

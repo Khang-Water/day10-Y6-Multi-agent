@@ -1,5 +1,6 @@
-chunk_id,doc_id,chunk_text,effective_date,exported_at,reason,effective_date_normalized
-2,policy_refund_v4,Yêu cầu được gửi trong vòng 7 ngày làm việc kể từ thời điểm xác nhận đơn hàng.,2026-02-01,2026-04-10T08:00:00,duplicate_chunk_text,
-5,policy_refund_v4,,,2026-04-10T08:00:00,missing_effective_date,
-7,hr_leave_policy,Nhân viên dưới 3 năm kinh nghiệm được 10 ngày phép năm (bản HR 2025).,2025-01-01,2026-04-10T08:00:00,stale_hr_policy_effective_date,2025-01-01
-9,legacy_catalog_xyz_zzz,Chunk nội dung đủ dài để vượt ngưỡng expectation độ dài tối thiểu trong cleaned export.,2026-02-01,2026-04-10T08:00:00,unknown_doc_id,
+chunk_id,doc_id,chunk_text,effective_date,exported_at,reason,artifact_pattern,matched_text
+1,sla_p1_2026,Thời gian phản hồi sự cố mạng nội bộ là Error! Reference source not found. theo quy định.,2026-02-01,2026-04-10T08:00:00,extraction_artifact_detected,Error! Reference source not found,
+2,hr_leave_policy,Họ và tên nhân viên xin nghỉ: _________ thuộc phòng ban IT.,2026-02-01,2026-04-10T08:00:00,extraction_artifact_detected,_________,
+4,it_helpdesk_faq,"Nếu quên thẻ từ, vui lòng gọi cho bảo vệ tòa nhà qua số 0987654321.",2026-02-01,2026-04-10T08:00:00,pii_leakage_detected,,0987654321
+5,hr_leave_policy,"Mọi thắc mắc về bảo hiểm, gửi mail trực tiếp cho hcns.congty@yahoo.com.",2026-02-01,2026-04-10T08:00:00,pii_leakage_detected,,hcns.congty@yahoo.com
+7,policy_refund_v4,<div><br>&nbsp;&#8203;</div>,2026-02-01,2026-04-10T08:00:00,empty_after_html_strip,,
